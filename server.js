@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 
 app.get('/', (req, res) => {
-  res.send('Zizzl Server läuft! 🚀');
+  res.send('Zizzl Server läuft!');
 });
 
 const server = http.createServer(app);
@@ -30,11 +30,12 @@ function generatePin() {
 }
 
 io.on('connection', (socket) => {
-  console.log(`[+] Neuer Spieler: ${socket.id}`);
 
   socket.on('createLobby', ({ username }) => {
     let pin = generatePin();
     while (lobbies[pin]) pin = generatePin();
+
+    const cleanName = username ? username.trim() : 'Host';
 
     lobbies[pin] = {
       host: socket.id,
@@ -43,7 +44,7 @@ io.on('connection', (socket) => {
       currentRound: 0,
       selectedGames: ['snake'],
       players: [
-        { id: socket.id, username: username || 'Host', score: 0, currentScore: 0, isHost: true }
+        { id: socket.id, username: cleanName, score: 0, currentScore: 0, isHost: true }
       ]
     };
 
@@ -60,13 +61,25 @@ io.on('connection', (socket) => {
     const lobby = lobbies[cleanPin];
 
     if (!lobby) {
-      socket.emit('errorMsg', 'Lobby nicht gefunden!');
+      socket.emit('errorMsg', 'Lobby wurde nicht gefunden!');
+      return;
+    }
+
+    const cleanName = username ? username.trim() : 'Spieler';
+
+    // NAMENS-PRÜFUNG: Exakte Schreibweise (Groß-/Kleinschreibung egal)
+    const nameExists = lobby.players.some(
+      p => p.username.toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (nameExists) {
+      socket.emit('errorMsg', 'Dieser Name ist bereits vergeben! Bitte wähle einen anderen.');
       return;
     }
 
     const newPlayer = {
       id: socket.id,
-      username: username || 'Spieler',
+      username: cleanName,
       score: 0,
       currentScore: 0,
       isHost: false
