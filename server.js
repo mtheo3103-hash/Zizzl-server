@@ -6,7 +6,6 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// Healthcheck Route für Render
 app.get('/', (req, res) => {
   res.send('Zizzl Server läuft! 🚀');
 });
@@ -14,17 +13,15 @@ app.get('/', (req, res) => {
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*", // Erlaubt Zugriff von deiner GitHub Pages Website
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
 
-// Speicher für alle aktiven Lobbys
 const lobbies = {};
 
-// Generiert einen zufälligen 4-stelligen Game-PIN (z.B. Z8B2)
 function generatePin() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // Ohne verwirrende Zeichen wie 0/O oder 1/I
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code = '';
   for (let i = 0; i < 4; i++) {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -33,22 +30,20 @@ function generatePin() {
 }
 
 io.on('connection', (socket) => {
-  console.log(`[+] Neuer Spieler verbunden: ${socket.id}`);
+  console.log(`[+] Neuer Spieler: ${socket.id}`);
 
-  // 1. LOBBY ERSTELLEN (HOST)
   socket.on('createLobby', ({ username }) => {
     let pin = generatePin();
-    while (lobbies[pin]) {
-      pin = generatePin(); // Stelle sicher, dass der PIN eindeutig ist
-    }
+    while (lobbies[pin]) pin = generatePin();
 
     lobbies[pin] = {
       host: socket.id,
       pin: pin,
       totalRounds: 5,
       currentRound: 0,
+      selectedGames: ['snake'],
       players: [
-        { id: socket.id, username: username || 'Host', score: 0, isHost: true }
+        { id: socket.id, username: username || 'Host', score: 0, currentScore: 0, isHost: true }
       ]
     };
 
@@ -58,17 +53,14 @@ io.on('connection', (socket) => {
       players: lobbies[pin].players,
       isHost: true
     });
-
-    console.log(`[LOBBY] Erstellt mit PIN ${pin} von ${username}`);
   });
 
-  // 2. LOBBY BEITRETEN (SPIELER)
   socket.on('joinLobby', ({ pin, username }) => {
     const cleanPin = pin ? pin.toUpperCase().trim() : '';
     const lobby = lobbies[cleanPin];
 
     if (!lobby) {
-      socket.emit('errorMsg', 'Lobby nicht gefunden! Bitte PIN prüfen.');
+      socket.emit('errorMsg', 'Lobby nicht gefunden!');
       return;
     }
 
@@ -76,70 +68,70 @@ io.on('connection', (socket) => {
       id: socket.id,
       username: username || 'Spieler',
       score: 0,
+      currentScore: 0,
       isHost: false
     };
 
     lobby.players.push(newPlayer);
     socket.join(cleanPin);
 
-    // Bestätigung an den neu beigetretenen Spieler
     socket.emit('joinedLobby', {
       pin: cleanPin,
       players: lobby.players,
       isHost: false
     });
 
-    // Alle anderen in der Lobby benachrichtigen
     io.to(cleanPin).emit('updatePlayers', lobby.players);
-    console.log(`[LOBBY] ${username} ist Lobby ${cleanPin} beigetreten`);
   });
 
-  // 3. EINSTELLUNGEN ÄNDERN (HOST)
-  socket.on('updateSettings', ({ pin, rounds }) => {
+  socket.on('updateSettings', ({ pin, rounds, selectedGames }) => {
     const lobby = lobbies[pin];
     if (lobby && lobby.host === socket.id) {
       lobby.totalRounds = parseInt(rounds, 10);
-      io.to(pin).emit('settingsUpdated', { totalRounds: lobby.totalRounds });
+      lobby.selectedGames = selectedGames || ['snake'];
     }
   });
 
-  // 4. SPIEL STARTEN (HOST)
   socket.on('startGame', ({ pin }) => {
     const lobby = lobbies[pin];
     if (lobby && lobby.host === socket.id) {
       lobby.currentRound = 1;
+      const gameToPlay = lobby.selectedGames[0] || 'snake';
+
       io.to(pin).emit('gameStarted', {
         round: lobby.currentRound,
-        totalRounds: lobby.totalRounds
+        totalRounds: lobby.totalRounds,
+        gameType: gameToPlay
       });
-      console.log(`[GAME] Spiel in Lobby ${pin} gestartet!`);
     }
   });
 
-  // 5. DISCONNECT HANDLER (Wenn jemand den Tab schließt)
+  socket.on('submitScore', ({ pin, score }) => {
+    const lobby = lobbies[pin];
+    if (!lobby) return;
+
+    const player = lobby.players.find(p => p.id === socket.id);
+    if (player) {
+      player.currentScore = score;
+      const leaderboard = [...lobby.players].sort((a, b) => (b.currentScore || 0) - (a.currentScore || 0));
+      io.to(pin).emit('updateLeaderboard', leaderboard);
+    }
+  });
+
   socket.on('disconnect', () => {
-    console.log(`[-] Verbindung getrennt: ${socket.id}`);
-    
-    // Durchsuche alle Lobbys und entferne den Spieler
     for (const pin in lobbies) {
       const lobby = lobbies[pin];
-      const playerIndex = lobby.players.findIndex(p => p.id === socket.id);
+      const index = lobby.players.findIndex(p => p.id === socket.id);
 
-      if (playerIndex !== -1) {
-        lobby.players.splice(playerIndex, 1);
-
-        // Wenn die Lobby leer ist -> Löschen
+      if (index !== -1) {
+        lobby.players.splice(index, 1);
         if (lobby.players.length === 0) {
           delete lobbies[pin];
-          console.log(`[LOBBY] Lobby ${pin} gelöscht (keine Spieler mehr).`);
         } else {
-          // Wenn der Host gegangen ist -> Neuen Host ernennen
           if (lobby.host === socket.id) {
             lobby.host = lobby.players[0].id;
             lobby.players[0].isHost = true;
-            io.to(lobby.players[0].id).emit('youAreHost');
           }
-          // Alle verbliebenen Spieler aktualisieren
           io.to(pin).emit('updatePlayers', lobby.players);
         }
         break;
@@ -148,7 +140,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Port für Render ( Render setzt automatisch process.env.PORT )
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Zizzl Backend läuft auf Port ${PORT}`);
